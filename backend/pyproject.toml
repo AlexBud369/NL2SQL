@@ -1,0 +1,52 @@
+[project]
+name = "nl2sql"
+version = "0.1.0"
+description = "Backend for NL2SQL"
+readme = "README.md"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    "fastapi>=0.142.2",
+    "uvicorn[standard]>=0.54.0",
+    "pydantic>=2.13.5",
+    "pydantic-settings>=2.15.0",
+    "python-dotenv>=1.2.3",
+    "asyncpg>=0.31.0",
+    "aiomysql>=0.3.2",
+    "aioodbc>=0.5.0",
+    "sqlglot>=30.19.0",
+    "openai>=3.14.0",
+    "httpx>=0.28.1",
+    "openpyxl>=3.1.5",
+    "pandas>=3.0.6",
+    "torch>=2.14.0",
+    "transformers>=5.17.0",
+    "pytorch-crf>=0.7.2",
+    "seqeval>=1.2.2",
+    "scikit-learn>=1.9.1",
+    "numpy>=2.5.3",
+    "deep-translator>=1.11.4",
+]
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.6.2",
+    "ruff>=0.16.6",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+extend-exclude = [
+    ".venv/",
+    ".git/",
+    "__pycache__/",
+    "models/",
+    "data/",
+]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "C"]
+ignore = ["E501", "C901"]
