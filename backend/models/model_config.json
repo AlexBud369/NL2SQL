@@ -1,0 +1,31 @@
+{
+  "config": {
+    "model_name": "cointegrated/rubert-tiny2",
+    "num_codes": 11,
+    "codes_order": [
+      "UNKNOWN_TABLE",
+      "UNKNOWN_COLUMN",
+      "SCOPE",
+      "VAGUE",
+      "ATTACH",
+      "MISSING_TIME",
+      "MISSING_VALUE",
+      "MISSING_CRITERION",
+      "MISSING_AGG",
+      "MISSING_SORT",
+      "MISSING_LIMIT"
+    ],
+    "threshold": 0.5,
+    "max_length": 512
+  },
+  "best_epoch": 4,
+  "best_macro_f1": 0.9954177825263613,
+  "metrics": {
+    "macro_f1": 0.9954177825263613,
+    "micro_f1": 0.995172968624296,
+    "subset_accuracy": 0.9926666666666667,
+    "hamming_loss": 0.0007272727272727272,
+    "clarity_accuracy": 0.9966666666666667,
+    "false_clear_rate": 0.09871668311944717
+  }
+}

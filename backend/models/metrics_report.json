@@ -1,0 +1,126 @@
+{
+  "model_name": "cointegrated/rubert-tiny2",
+  "multilabel": {
+    "macro_f1": 0.9953989648293846,
+    "micro_f1": 0.9932056825200741,
+    "subset_accuracy": 0.991,
+    "hamming_loss": 0.001
+  },
+  "pr_auc": {
+    "macro_pr_auc": 0.9999,
+    "per_class_pr_auc": {
+      "UNKNOWN_TABLE": 1.0,
+      "UNKNOWN_COLUMN": 1.0,
+      "SCOPE": 1.0,
+      "VAGUE": 1.0,
+      "ATTACH": 1.0,
+      "MISSING_TIME": 1.0,
+      "MISSING_VALUE": 1.0,
+      "MISSING_CRITERION": 1.0,
+      "MISSING_AGG": 1.0,
+      "MISSING_SORT": 0.9996,
+      "MISSING_LIMIT": 0.9998
+    }
+  },
+  "calibration": {
+    "expected_calibration_error": 0.0061,
+    "brier_score": 0.0007
+  },
+  "clarity": {
+    "clarity_accuracy": 0.996,
+    "clarity_macro_f1": 0.9960210122418959,
+    "false_clear_rate": 0.30303030303030304,
+    "false_block_rate": 0.29411764705882354,
+    "confusion_matrix": [
+      [
+        339,
+        0,
+        1
+      ],
+      [
+        2,
+        381,
+        1
+      ],
+      [
+        0,
+        0,
+        276
+      ]
+    ]
+  },
+  "score": {
+    "score_mae": 0.0021499999999999996,
+    "score_rmse": 0.0239269722280108
+  },
+  "per_class": {
+    "UNKNOWN_TABLE": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 60.0
+    },
+    "UNKNOWN_COLUMN": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 51.0
+    },
+    "SCOPE": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 56.0
+    },
+    "VAGUE": {
+      "precision": 0.9705882352941176,
+      "recall": 1.0,
+      "f1": 0.9850746268656716,
+      "support": 66.0
+    },
+    "ATTACH": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 43.0
+    },
+    "MISSING_TIME": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 160.0
+    },
+    "MISSING_VALUE": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 35.0
+    },
+    "MISSING_CRITERION": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 44.0
+    },
+    "MISSING_AGG": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 42.0
+    },
+    "MISSING_SORT": {
+      "precision": 0.9834710743801653,
+      "recall": 0.9834710743801653,
+      "f1": 0.9834710743801653,
+      "support": 121.0
+    },
+    "MISSING_LIMIT": {
+      "precision": 0.9624060150375939,
+      "recall": 1.0,
+      "f1": 0.9808429118773946,
+      "support": 128.0
+    }
+  },
+  "latency_p50_ms": 2.236268749982173,
+  "latency_p95_ms": 2.3562031250321525
+}
