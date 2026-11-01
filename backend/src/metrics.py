@@ -5,6 +5,8 @@ from typing import Any
 import numpy as np
 from sklearn.metrics import (
     accuracy_score,
+    average_precision_score,
+    brier_score_loss,
     confusion_matrix,
     f1_score,
     hamming_loss,
@@ -43,6 +45,57 @@ def compute_per_class_metrics(
             "support": float(s),
         }
     return per_class
+
+
+def compute_pr_auc_metrics(
+    targets: np.ndarray,
+    probabilities: np.ndarray,
+    codes_order: list[str],
+) -> dict[str, Any]:
+    per_class_pr_auc: dict[str, float] = {}
+    all_scores: list[float] = []
+
+    for idx, code in enumerate(codes_order):
+        y_true = targets[:, idx]
+        y_score = probabilities[:, idx]
+        if y_true.sum() > 0:
+            score = float(average_precision_score(y_true, y_score))
+        else:
+            score = 1.0
+        per_class_pr_auc[code] = round(score, 4)
+        all_scores.append(score)
+
+    return {
+        "macro_pr_auc": round(float(np.mean(all_scores)), 4),
+        "per_class_pr_auc": per_class_pr_auc,
+    }
+
+
+def compute_calibration_metrics(
+    targets: np.ndarray,
+    probabilities: np.ndarray,
+    num_bins: int = 10,
+) -> dict[str, float]:
+    y_true_flat = targets.flatten()
+    y_prob_flat = probabilities.flatten()
+
+    bin_boundaries = np.linspace(0.0, 1.0, num_bins + 1)
+    ece = 0.0
+    total_samples = len(y_true_flat)
+
+    for i in range(num_bins):
+        bin_mask = (y_prob_flat >= bin_boundaries[i]) & (y_prob_flat < bin_boundaries[i + 1])
+        bin_size = np.sum(bin_mask)
+        if bin_size > 0:
+            bin_acc = np.mean(y_true_flat[bin_mask])
+            bin_conf = np.mean(y_prob_flat[bin_mask])
+            ece += (bin_size / total_samples) * abs(bin_acc - bin_conf)
+
+    brier = float(brier_score_loss(y_true_flat, y_prob_flat))
+    return {
+        "expected_calibration_error": round(float(ece), 4),
+        "brier_score": round(brier, 4),
+    }
 
 
 def compute_clarity_metrics(

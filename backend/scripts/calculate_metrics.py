@@ -20,13 +20,20 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.constants import CODES_ORDER
 from src.dataset import NL2SQLDataCollator, NL2SQLDataset
 from src.metrics import (
+    compute_calibration_metrics,
     compute_clarity_metrics,
     compute_multilabel_metrics,
     compute_per_class_metrics,
+    compute_pr_auc_metrics,
     compute_score_metrics,
 )
 from src.model import NL2SQLQualityModel
 from src.postprocess import compute_completeness_score, derive_clarity
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("metrics")
@@ -61,7 +68,10 @@ def load_model_and_tokenizer(
     model_name = config.get("model_name", "cointegrated/rubert-tiny2")
     codes = config.get("codes_order", CODES_ORDER)
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(model_name, local_files_only=True)
+    except Exception:
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = NL2SQLQualityModel(model_name=model_name, num_codes=len(codes)).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
@@ -74,7 +84,7 @@ def run_batch_inference(
     batch: dict[str, Any],
     device: torch.device,
     threshold: float,
-) -> tuple[np.ndarray, np.ndarray, float]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
     inputs = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor) and k != "labels"}
     labels = batch["labels"]
 
@@ -84,8 +94,9 @@ def run_batch_inference(
         torch.cuda.synchronize()
     latency_ms = (time.perf_counter() - t0) * 1000.0 / inputs["input_ids"].size(0)
 
-    binary_preds = (torch.sigmoid(logits).cpu().numpy() >= threshold).astype(int)
-    return binary_preds, labels.cpu().numpy().astype(int), latency_ms
+    probabilities = torch.sigmoid(logits).cpu().numpy()
+    binary_preds = (probabilities >= threshold).astype(int)
+    return binary_preds, probabilities, labels.cpu().numpy().astype(int), latency_ms
 
 
 def evaluate_dataset(
@@ -94,13 +105,15 @@ def evaluate_dataset(
     device: torch.device,
     threshold: float,
     codes_order: list[str],
-) -> tuple[np.ndarray, np.ndarray, list[str], list[str], list[float], list[float]]:
-    all_preds, all_targets, all_true_clarity, all_pred_clarity, all_pred_scores, latencies = [], [], [], [], [], []
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str], list[str], list[float], list[float]]:
+    all_preds, all_probs, all_targets = [], [], []
+    all_true_clarity, all_pred_clarity, all_pred_scores, latencies = [], [], [], []
 
     with torch.no_grad():
         for batch in loader:
-            preds, targets, per_sample_latency = run_batch_inference(model, batch, device, threshold)
+            preds, probs, targets, per_sample_latency = run_batch_inference(model, batch, device, threshold)
             all_preds.append(preds)
+            all_probs.append(probs)
             all_targets.append(targets)
             latencies.extend([per_sample_latency] * len(preds))
 
@@ -110,36 +123,52 @@ def evaluate_dataset(
                 all_true_clarity.append(true_clarity)
                 all_pred_scores.append(compute_completeness_score(detected))
 
-    return np.vstack(all_preds), np.vstack(all_targets), all_true_clarity, all_pred_clarity, all_pred_scores, latencies
+    return (
+        np.vstack(all_preds),
+        np.vstack(all_probs),
+        np.vstack(all_targets),
+        all_true_clarity,
+        all_pred_clarity,
+        all_pred_scores,
+        latencies,
+    )
 
 
 def display_multilabel_results(
     codes_order: list[str],
     per_class: dict[str, dict[str, float]],
     multi_metrics: dict[str, float],
+    pr_auc_results: dict[str, Any],
 ) -> None:
     print("\n1. ТАБЛИЦА МЕТРИК ПО КОДАМ ОШИБОК:")
-    print("┌────────────────────┬───────────┬────────┬──────────┬─────────┐")
-    print("│ Код ошибки         │ Precision │ Recall │ F1-Score │ Support │")
-    print("├────────────────────┼───────────┼────────┼──────────┼─────────┤")
+    print("┌────────────────────┬───────────┬────────┬──────────┬──────────┬─────────┐")
+    print("│ Код ошибки         │ Precision │ Recall │ F1-Score │  PR-AUC  │ Support │")
+    print("├────────────────────┼───────────┼────────┼──────────┼──────────┼─────────┤")
     for code in codes_order:
         data = per_class[code]
-        print(f"│ {code:<18s} │  {data['precision']*100:6.2f}%  │ {data['recall']*100:5.2f}% │  {data['f1']*100:6.2f}%  │ {int(data['support']):7d} │")
-    print("├────────────────────┼───────────┼────────┼──────────┼─────────┤")
-    print(f"│ MACRO F1           │     —     │    —   │  {multi_metrics['macro_f1']*100:6.2f}%  │    —    │")
-    print(f"│ MICRO F1           │     —     │    —   │  {multi_metrics['micro_f1']*100:6.2f}%  │    —    │")
-    print("└────────────────────┴───────────┴────────┴──────────┴─────────┘")
+        auc_val = pr_auc_results["per_class_pr_auc"].get(code, 0.0)
+        print(
+            f"│ {code:<18s} │  {data['precision']*100:6.2f}%  │ {data['recall']*100:5.2f}% │  {data['f1']*100:6.2f}%  │  {auc_val*100:6.2f}%  │ {int(data['support']):7d} │"
+        )
+    print("├────────────────────┼───────────┼────────┼──────────┼──────────┼─────────┤")
+    print(
+        f"│ СРЕДНЕЕ (MACRO)    │     —     │    —   │  {multi_metrics['macro_f1']*100:6.2f}%  │  {pr_auc_results['macro_pr_auc']*100:6.2f}%  │    —    │"
+    )
+    print(f"│ MICRO F1           │     —     │    —   │  {multi_metrics['micro_f1']*100:6.2f}%  │    —     │    —    │")
+    print("└────────────────────┴───────────┴────────┴──────────┴──────────┴─────────┘")
     print(f"  • Subset Accuracy: {multi_metrics['subset_accuracy']*100:.2f}%")
     print(f"  • Hamming Loss:    {multi_metrics['hamming_loss']:.4f}")
 
 
-def display_clarity_results(clarity_metrics: dict[str, Any]) -> None:
+def display_clarity_results(clarity_metrics: dict[str, Any], calib_metrics: dict[str, float]) -> None:
     cm = clarity_metrics["confusion_matrix"]
-    print("\n2. ОЦЕНКА БИЗНЕС-СТАТУСА CLARITY:")
+    print("\n2. ОЦЕНКА БИЗНЕС-СТАТУСА CLARITY И КАЛИБРОВКИ:")
     print(f"  • Accuracy:        {clarity_metrics['clarity_accuracy']*100:.2f}%")
     print(f"  • Macro F1:        {clarity_metrics['clarity_macro_f1']*100:.2f}%")
     print(f"  • False Clear:     {clarity_metrics['false_clear_rate']:.2f}%")
     print(f"  • False Block:     {clarity_metrics['false_block_rate']:.2f}%")
+    print(f"  • Ошибка калибровки (ECE):  {calib_metrics['expected_calibration_error']:.4f}")
+    print(f"  • Мера Брайера (Brier):     {calib_metrics['brier_score']:.4f}")
     print("\n  Матрица ошибок (Confusion Matrix):")
     print("  ┌─────────────────┬──────────────┬─────────────────┬────────────────┐")
     print("  │ Факт \\ Прогноз  │  Pred CLEAR  │ Pred INCOMPLETE │ Pred AMBIGUOUS │")
@@ -199,28 +228,32 @@ def main() -> None:
     collator = NL2SQLDataCollator(tokenizer=tokenizer)
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, collate_fn=collator)
 
-    preds, targets, true_clarity, pred_clarity, pred_scores, latencies = evaluate_dataset(
+    preds, probs, targets, true_clarity, pred_clarity, pred_scores, latencies = evaluate_dataset(
         model, loader, device, args.threshold, codes_order
     )
     true_scores = load_dataset_scores(data_path)
 
     multilabel_results = compute_multilabel_metrics(targets, preds)
     per_class_results = compute_per_class_metrics(targets, preds, codes_order)
+    pr_auc_results = compute_pr_auc_metrics(targets, probs, codes_order)
+    calibration_results = compute_calibration_metrics(targets, probs)
     clarity_results = compute_clarity_metrics(true_clarity, pred_clarity)
     score_results = compute_score_metrics(true_scores, pred_scores)
 
-    print("\n" + "=" * 78)
-    print("      📊 ОТЧЕТ КАЧЕСТВА МОДЕЛИ QUALITY GATE (NL2SQL)")
-    print("=" * 78)
-    display_multilabel_results(codes_order, per_class_results, multilabel_results)
-    display_clarity_results(clarity_results)
+    print("\n" + "=" * 82)
+    print("      РАСШИРЕННЫЙ ОТЧЕТ КАЧЕСТВА МОДЕЛИ QUALITY GATE (NL2SQL)")
+    print("=" * 82)
+    display_multilabel_results(codes_order, per_class_results, multilabel_results, pr_auc_results)
+    display_clarity_results(clarity_results, calibration_results)
     display_latency_and_score_results(score_results, latencies)
-    print("=" * 78 + "\n")
+    print("=" * 82 + "\n")
 
     if args.export_json:
         report_payload = {
             "model_name": config.get("model_name"),
             "multilabel": multilabel_results,
+            "pr_auc": pr_auc_results,
+            "calibration": calibration_results,
             "clarity": clarity_results,
             "score": score_results,
             "per_class": per_class_results,
