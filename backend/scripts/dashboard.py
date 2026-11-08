@@ -17,6 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from scripts.evaluate_golden import run_golden_evaluation, save_report
 from src.constants import CODES_ORDER
 from src.model import NL2SQLQualityModel
 from src.postprocess import postprocess_predictions
@@ -29,6 +30,8 @@ st.set_page_config(
 
 MODEL_CHECKPOINT = PROJECT_ROOT / "models" / "best_model.pt"
 METRICS_REPORT_FILE = PROJECT_ROOT / "models" / "metrics_report.json"
+GOLDEN_TEST_FILE = PROJECT_ROOT / "data" / "golden_test.jsonl"
+GOLDEN_REPORT_FILE = PROJECT_ROOT / "models" / "golden_test_report.json"
 
 SAMPLE_SCHEMAS: dict[str, str] = {
     "Сотрудники и отделы (HR)": (
@@ -202,6 +205,113 @@ def render_probability_chart(codes: list[str], probs: list[float], threshold: fl
     st.altair_chart(chart + rule, use_container_width=True)
 
 
+def render_golden_summary(report: dict[str, Any]) -> None:
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Точность статуса", f"{report.get('status_accuracy', 0.0) * 100:.2f}%")
+    c2.metric("Точное совпадение кодов (EM)", f"{report.get('code_subset_accuracy', 0.0) * 100:.2f}%")
+    c3.metric("Macro F1", f"{report.get('macro_f1', 0.0) * 100:.2f}%")
+    c4.metric("Средняя задержка", f"{report.get('avg_latency', 0.0):.2f} мс")
+
+
+def render_golden_matrix(cm: list[list[int]]) -> None:
+    st.markdown("##### Матрица ошибок бизнес-статусов (Confusion Matrix)")
+    df = pd.DataFrame(
+        cm,
+        index=["Факт: CLEAR", "Факт: INCOMPLETE", "Факт: AMBIGUOUS"],
+        columns=["Прогноз: CLEAR", "Прогноз: INCOMPLETE", "Прогноз: AMBIGUOUS"],
+    )
+    st.dataframe(df, use_container_width=True)
+
+
+def render_golden_code_table(codes_order: list[str], per_class: dict[str, Any]) -> None:
+    st.markdown("##### Детализация по 11 кодам дефектов")
+    rows = []
+    for code in codes_order:
+        stats = per_class.get(code, {})
+        rows.append(
+            {
+                "Код дефекта": code,
+                "Точность (Precision)": f"{stats.get('precision', 0.0) * 100:.2f}%",
+                "Полнота (Recall)": f"{stats.get('recall', 0.0) * 100:.2f}%",
+                "F1-Score": f"{stats.get('f1', 0.0) * 100:.2f}%",
+                "Примеров (Support)": int(stats.get("support", 0)),
+            }
+        )
+    st.dataframe(pd.DataFrame(rows), use_container_width=True)
+
+
+def render_golden_mismatches(records: list[dict[str, Any]]) -> None:
+    st.markdown("##### Детальный анализ примеров")
+    mismatches = [r for r in records if not (r["status_match"] and r["code_exact_match"])]
+    view_mode = st.radio(
+        "Фильтр отображения:",
+        [f"Только расхождения ({len(mismatches)})", f"Все примеры ({len(records)})"],
+        horizontal=True,
+    )
+    items_to_show = mismatches if "Только расхождения" in view_mode else records
+
+    for item in items_to_show:
+        is_ok = item["status_match"] and item["code_exact_match"]
+        tag = "[OK]" if is_ok else "[РАСХОЖДЕНИЕ]"
+        title = f"{tag} {item['id']}: {item['question']}"
+        with st.expander(title, expanded=not is_ok):
+            col_l, col_r = st.columns(2)
+            with col_l:
+                st.markdown(f"**Ожидаемый статус:** `{item['expected_status']}`")
+                st.markdown(f"**Предсказанный статус:** `{item['pred_status']}`")
+                st.markdown(f"**Схема:** `{item.get('schema', '')}`")
+            with col_r:
+                st.markdown(f"**Ожидаемые коды:** `{item['expected_codes']}`")
+                st.markdown(f"**Предсказанные коды:** `{item['pred_codes']}`")
+                top = {c: f"{p*100:.1f}%" for c, p in item["probabilities"].items() if p >= 0.15 or c in item["expected_codes"]}
+                st.markdown(f"**Вероятности кодов:** `{top}`")
+
+
+def render_golden_tab(model: NL2SQLQualityModel | None, tokenizer: Any, config: dict[str, Any]) -> None:
+    st.subheader("Тестирование модели на эталонной выборке (Golden Test)")
+    st.markdown("Прогон 70 подготовленных вручную запросов для проверки точности бизнес-статуса и кодов дефектов.")
+
+    c_thresh, c_btn = st.columns([1.5, 1.0])
+    with c_thresh:
+        threshold = st.slider("Порог отсечения для теста:", 0.1, 0.9, 0.5, 0.05, key="golden_threshold")
+    with c_btn:
+        st.write("")
+        st.write("")
+        btn_run = st.button("Запустить Golden Test", type="primary", use_container_width=True)
+
+    if btn_run:
+        if model is None or tokenizer is None:
+            st.error("Файл модели best_model.pt не найден.")
+            return
+        if not GOLDEN_TEST_FILE.exists():
+            st.error(f"Файл эталонного теста не найден: {GOLDEN_TEST_FILE}")
+            return
+
+        codes_order = config.get("codes_order", CODES_ORDER)
+        with st.spinner("Выполняется инференс по 70 эталонным запросам..."):
+            report = run_golden_evaluation(model, tokenizer, codes_order, GOLDEN_TEST_FILE, threshold)
+            save_report(GOLDEN_REPORT_FILE, report)
+            st.session_state["golden_report"] = report
+            st.success("Тестирование успешно завершено!")
+
+    report = st.session_state.get("golden_report")
+    if report is None and GOLDEN_REPORT_FILE.exists():
+        with open(GOLDEN_REPORT_FILE, "r", encoding="utf-8") as f:
+            report = json.load(f)
+
+    if report is not None:
+        st.markdown("---")
+        render_golden_summary(report)
+        col_m1, col_m2 = st.columns([1.0, 1.2])
+        with col_m1:
+            render_golden_matrix(report["confusion_matrix"])
+        with col_m2:
+            render_golden_code_table(config.get("codes_order", CODES_ORDER), report.get("per_class_metrics", {}))
+        render_golden_mismatches(report.get("records", []))
+    else:
+        st.info("Нажмите кнопку 'Запустить Golden Test', чтобы выполнить тестирование модели.")
+
+
 def render_benchmark_tab() -> None:
     st.subheader("Показатели качества модели (контрольная выборка)")
     if not METRICS_REPORT_FILE.exists():
@@ -325,10 +435,17 @@ def render_playground_tab(model: NL2SQLQualityModel | None, tokenizer: Any, conf
 def main() -> None:
     st.title("NL2SQL Quality Gate — Панель тестирования")
     model, tokenizer, config = load_runtime_artifacts()
-    tab_play, tab_metrics = st.tabs(["Проверка запроса", "Метрики и калибровка"])
+    tab_play, tab_golden, tab_metrics = st.tabs([
+        "Проверка запроса",
+        "Эталонный тест (Golden Test)",
+        "Метрики обучения",
+    ])
 
     with tab_play:
         render_playground_tab(model, tokenizer, config)
+
+    with tab_golden:
+        render_golden_tab(model, tokenizer, config)
 
     with tab_metrics:
         render_benchmark_tab()
