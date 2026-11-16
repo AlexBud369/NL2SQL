@@ -5,6 +5,20 @@ import re
 TABLE_PATTERN = re.compile(r"TABLE\s+([A-Za-z0-9_]+)\s*:\s*(.*?)(?=\s*\|\s*TABLE\s|$)", re.I)
 CONSTRAINT_PREFIXES = ("FOREIGN", "PRIMARY", "UNIQUE", "CHECK", "CONSTRAINT", "KEY ")
 
+SQL_KEYWORDS = frozenset({
+    "select", "from", "where", "join", "inner", "left", "right", "outer",
+    "group", "by", "order", "having", "limit", "offset", "insert", "into",
+    "values", "update", "set", "delete", "table", "as", "and", "or", "not",
+    "in", "is", "null", "like", "between", "distinct", "count", "sum", "avg",
+    "min", "max", "primary", "key", "foreign", "references", "int", "varchar",
+    "boolean", "date", "timestamp", "decimal", "float", "true", "false",
+    "cancelled", "admin", "hr", "shop", "hospital", "flights", "id",
+    "всех", "базы", "данных", "список"
+})
+
+TABLE_KW_RE = re.compile(r"(?:таблиц[аыеу]|из\s+таблицы|в\s+таблиц[еу])\s+([a-zA-Z0-9_]+)", re.I)
+COLUMN_KW_RE = re.compile(r"(?:пол[еяю]|колонк[аеуи]|полю|атрибут[аы]?|по)\s+([a-zA-Z0-9_]+)", re.I)
+
 
 class SchemaValidator:
     def __init__(self, db_schema: str):
@@ -62,3 +76,20 @@ class SchemaValidator:
         if mentioned_columns:
             errors.extend(self._validate_column_names(mentioned_columns, target_table))
         return sorted(list(set(errors)))
+
+    def validate_query(self, question: str) -> list[str]:
+        errors: set[str] = set()
+        all_tables = set(self.tables.keys())
+        all_columns = {col for cols in self.tables.values() for col in cols}
+
+        for match in TABLE_KW_RE.finditer(question):
+            token = match.group(1).lower()
+            if token not in SQL_KEYWORDS and token not in all_tables:
+                errors.add("UNKNOWN_TABLE")
+
+        for match in COLUMN_KW_RE.finditer(question):
+            token = match.group(1).lower()
+            if token not in SQL_KEYWORDS and token not in all_tables and token not in all_columns:
+                errors.add("UNKNOWN_COLUMN")
+
+        return sorted(list(errors))

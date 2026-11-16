@@ -21,6 +21,7 @@ from scripts.evaluate_golden import run_golden_evaluation, save_report
 from src.constants import CODES_ORDER
 from src.model import NL2SQLQualityModel
 from src.postprocess import postprocess_predictions
+from src.schema_validator import SchemaValidator
 
 st.set_page_config(
     page_title="NL2SQL Quality Gate",
@@ -402,8 +403,10 @@ def render_playground_tab(model: NL2SQLQualityModel | None, tokenizer: Any, conf
             return
 
         codes_order = config.get("codes_order", CODES_ORDER)
+        validator = SchemaValidator(schema_text)
+        syntax_codes = validator.validate_query(user_query)
         probs, latency_ms = run_prediction(model, tokenizer, user_query, selected_db, schema_text)
-        result = postprocess_predictions(probs, codes_order, thresholds=threshold)
+        result = postprocess_predictions(probs, codes_order, thresholds=threshold, syntax_codes=syntax_codes)
 
         st.markdown("---")
         m1, m2, m3, m4 = st.columns(4)

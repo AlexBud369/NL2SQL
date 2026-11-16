@@ -27,6 +27,7 @@ from transformers import AutoTokenizer
 from src.constants import CODES_ORDER
 from src.model import NL2SQLQualityModel
 from src.postprocess import derive_clarity
+from src.schema_validator import SchemaValidator
 
 STATUSES: list[str] = ["clear", "incomplete", "ambiguous"]
 
@@ -110,8 +111,10 @@ def evaluate_sample(
     codes_order: list[str],
     threshold: float,
     latency_ms: float,
+    syntax_codes: list[str] | None = None,
 ) -> dict[str, Any]:
-    pred_codes = [code for prob, code in zip(probs, codes_order) if prob >= threshold]
+    neural_codes = [code for prob, code in zip(probs, codes_order) if prob >= threshold]
+    pred_codes = sorted(list(set(neural_codes + (syntax_codes or []))))
     pred_status = derive_clarity(pred_codes)
     exp_status = item["expected_status"]
     exp_codes = item["expected_codes"]
@@ -176,8 +179,12 @@ def run_golden_evaluation(
     samples = load_golden_samples(Path(test_file))
     records: list[dict[str, Any]] = []
     for item in samples:
+        validator = SchemaValidator(item["schema"])
+        syntax_codes = validator.validate_query(item["question"])
         probs, latency_ms = run_inference(model, tokenizer, item, device)
-        records.append(evaluate_sample(item, probs, codes_order, threshold, latency_ms))
+        records.append(
+            evaluate_sample(item, probs, codes_order, threshold, latency_ms, syntax_codes)
+        )
 
     status_metrics = compute_status_metrics(records)
     per_class, macro_f1, subset_acc = compute_code_metrics(records, codes_order)
