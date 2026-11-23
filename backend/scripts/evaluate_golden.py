@@ -31,12 +31,27 @@ from src.schema_validator import SchemaValidator
 
 STATUSES: list[str] = ["clear", "incomplete", "ambiguous"]
 
+DEFAULT_PER_CLASS_THRESHOLDS: dict[str, float] = {
+    "UNKNOWN_TABLE": 0.50,
+    "UNKNOWN_COLUMN": 0.50,
+    "SCOPE": 0.50,
+    "MISSING_AGG": 0.50,
+    "MISSING_TIME": 0.40,
+    "MISSING_CRITERION": 0.40,
+    "VAGUE": 0.40,
+    "ATTACH": 0.50,
+    "MISSING_VALUE": 0.20,
+    "MISSING_SORT": 0.25,
+    "MISSING_LIMIT": 0.25,
+}
+
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Автоматическое тестирование модели на Golden Test")
     parser.add_argument("--test_file", type=str, default="backend/data/golden_test.jsonl")
     parser.add_argument("--checkpoint", type=str, default="backend/models/best_model.pt")
     parser.add_argument("--threshold", type=float, default=0.5)
+    parser.add_argument("--use_calibrated", action="store_true", help="Использовать индивидуальные калиброванные пороги")
     parser.add_argument("--export_json", type=str, default="backend/models/golden_test_report.json")
     return parser.parse_args()
 
@@ -46,7 +61,11 @@ def load_model_and_tokenizer(
     device: torch.device,
 ) -> tuple[NL2SQLQualityModel, Any, list[str]]:
     if not checkpoint_path.exists():
-        raise FileNotFoundError(f"Файл чекпоинта не найден: {checkpoint_path}")
+        fallback = checkpoint_path.parent / "best_model_v5.pt"
+        if fallback.exists():
+            checkpoint_path = fallback
+        else:
+            raise FileNotFoundError(f"Файл чекпоинта не найден: {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location=device)
     config = checkpoint.get("config", {})
     model_name = config.get("model_name", "cointegrated/rubert-tiny2")
@@ -109,11 +128,15 @@ def evaluate_sample(
     item: dict[str, Any],
     probs: list[float],
     codes_order: list[str],
-    threshold: float,
+    threshold: float | dict[str, float],
     latency_ms: float,
     syntax_codes: list[str] | None = None,
 ) -> dict[str, Any]:
-    neural_codes = [code for prob, code in zip(probs, codes_order) if prob >= threshold]
+    neural_codes: list[str] = []
+    for prob, code in zip(probs, codes_order):
+        cutoff = threshold.get(code, 0.5) if isinstance(threshold, dict) else threshold
+        if prob >= cutoff:
+            neural_codes.append(code)
     pred_codes = sorted(list(set(neural_codes + (syntax_codes or []))))
     pred_status = derive_clarity(pred_codes)
     exp_status = item["expected_status"]
@@ -173,7 +196,7 @@ def run_golden_evaluation(
     tokenizer: Any,
     codes_order: list[str],
     test_file: Path | str = PROJECT_ROOT / "data" / "golden_test.jsonl",
-    threshold: float = 0.5,
+    threshold: float | dict[str, float] = 0.5,
 ) -> dict[str, Any]:
     device = next(model.parameters()).device
     samples = load_golden_samples(Path(test_file))
@@ -190,8 +213,10 @@ def run_golden_evaluation(
     per_class, macro_f1, subset_acc = compute_code_metrics(records, codes_order)
     avg_latency = float(np.mean([r["latency_ms"] for r in records]))
 
+    threshold_label = threshold if isinstance(threshold, (int, float)) else "calibrated"
     return {
-        "threshold": threshold,
+        "threshold": threshold_label,
+        "threshold_details": threshold if isinstance(threshold, dict) else {"fixed": threshold},
         "total_samples": len(records),
         "status_accuracy": status_metrics["status_accuracy"],
         "code_subset_accuracy": subset_acc,
@@ -210,13 +235,14 @@ def display_summary(
     exact_match: float,
     macro_f1: float,
     avg_latency: float,
-    threshold: float,
+    threshold: float | dict[str, float],
 ) -> None:
     print("\n" + "=" * 70)
     print("РЕЗУЛЬТАТЫ ТЕСТИРОВАНИЯ МОДЕЛИ НА GOLDEN TEST")
     print("=" * 70)
     print(f"Всего тестовых примеров:       {total}")
-    print(f"Порог классификации:          {threshold:.2f}")
+    thresh_str = f"{threshold:.2f}" if isinstance(threshold, (int, float)) else "поклассовый (калиброванный)"
+    print(f"Порог классификации:          {thresh_str}")
     print(f"Точность бизнес-статуса:      {status_acc * 100:.2f}%")
     print(f"Точное совпадение кодов (EM): {exact_match * 100:.2f}%")
     print(f"Macro F1 по активным кодам:   {macro_f1 * 100:.2f}%")
@@ -270,12 +296,13 @@ def main() -> None:
     args = parse_arguments()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, tokenizer, codes_order = load_model_and_tokenizer(Path(args.checkpoint), device)
+    active_thresh = DEFAULT_PER_CLASS_THRESHOLDS if args.use_calibrated else args.threshold
     report = run_golden_evaluation(
         model=model,
         tokenizer=tokenizer,
         codes_order=codes_order,
         test_file=Path(args.test_file),
-        threshold=args.threshold,
+        threshold=active_thresh,
     )
     display_summary(
         report["total_samples"],
@@ -283,7 +310,7 @@ def main() -> None:
         report["code_subset_accuracy"],
         report["macro_f1"],
         report["avg_latency"],
-        args.threshold,
+        active_thresh,
     )
     display_confusion_matrix(report["confusion_matrix"])
     display_code_table(codes_order, report["per_class_metrics"])

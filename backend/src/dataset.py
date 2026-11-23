@@ -48,7 +48,9 @@ class NL2SQLDataset(Dataset):
     def __getitem__(self, index: int) -> dict[str, Any]:
         item = self.data[index]
         prompt = self._format_input_prompt(item)
-        schema = item.get("db_schema", "")
+        schema = item.get("db_schema") or item.get("schema", "")
+        codes = item.get("codes") if "codes" in item else item.get("expected_codes", [])
+        clarity = item.get("clarity") or item.get("expected_status", "clear")
 
         encoding = self.tokenizer(
             prompt,
@@ -62,9 +64,9 @@ class NL2SQLDataset(Dataset):
         sample: dict[str, Any] = {
             "input_ids": encoding["input_ids"],
             "attention_mask": encoding["attention_mask"],
-            "labels": self._create_target_tensor(item.get("codes", [])),
+            "labels": self._create_target_tensor(codes),
             "raw_id": item.get("id", f"sample_{index}"),
-            "clarity": item.get("clarity", "clear"),
+            "clarity": clarity,
         }
 
         if "token_type_ids" in encoding:

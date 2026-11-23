@@ -17,7 +17,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.evaluate_golden import run_golden_evaluation, save_report
+from scripts.evaluate_golden import (
+    DEFAULT_PER_CLASS_THRESHOLDS,
+    run_golden_evaluation,
+    save_report,
+)
 from src.constants import CODES_ORDER
 from src.model import NL2SQLQualityModel
 from src.postprocess import postprocess_predictions
@@ -33,6 +37,24 @@ MODEL_CHECKPOINT = PROJECT_ROOT / "models" / "best_model.pt"
 METRICS_REPORT_FILE = PROJECT_ROOT / "models" / "metrics_report.json"
 GOLDEN_TEST_FILE = PROJECT_ROOT / "data" / "golden_test.jsonl"
 GOLDEN_REPORT_FILE = PROJECT_ROOT / "models" / "golden_test_report.json"
+GOLDEN_TEST_70_FILE = PROJECT_ROOT / "data" / "golden_test_70.jsonl"
+GOLDEN_REPORT_70_FILE = PROJECT_ROOT / "models" / "golden_test_report_70.json"
+GOLDEN_TEST_172_FILE = PROJECT_ROOT / "data" / "golden_test_172.jsonl"
+GOLDEN_REPORT_172_FILE = PROJECT_ROOT / "models" / "golden_test_report_172.json"
+
+CODE_CATEGORIES: dict[str, str] = {
+    "UNKNOWN_TABLE": "Критический (Схема)",
+    "UNKNOWN_COLUMN": "Критический (Схема)",
+    "SCOPE": "Критический (Вне темы)",
+    "ATTACH": "Контекст (Местоимения)",
+    "VAGUE": "Семантика (Размытость)",
+    "MISSING_AGG": "Семантика (Агрегация)",
+    "MISSING_VALUE": "Спецификация (Значение)",
+    "MISSING_TIME": "Спорный (Период дат)",
+    "MISSING_CRITERION": "Спорный (Фильтр WHERE)",
+    "MISSING_SORT": "Спорный (Сортировка)",
+    "MISSING_LIMIT": "Спорный (Лимит строк)",
+}
 
 SAMPLE_SCHEMAS: dict[str, str] = {
     "Сотрудники и отделы (HR)": (
@@ -113,10 +135,15 @@ PRESET_QUERIES: list[dict[str, str]] = [
 
 @st.cache_resource
 def load_runtime_artifacts() -> tuple[NL2SQLQualityModel | None, Any, dict[str, Any]]:
-    if not MODEL_CHECKPOINT.exists():
-        return None, None, {}
+    ckpt_path = MODEL_CHECKPOINT
+    if not ckpt_path.exists():
+        fallback = ckpt_path.parent / "best_model_v5.pt"
+        if fallback.exists():
+            ckpt_path = fallback
+        else:
+            return None, None, {}
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    checkpoint = torch.load(MODEL_CHECKPOINT, map_location=device)
+    checkpoint = torch.load(ckpt_path, map_location=device)
     config = checkpoint.get("config", {})
     model_name = config.get("model_name", "cointegrated/rubert-tiny2")
     codes = config.get("codes_order", CODES_ORDER)
@@ -232,6 +259,7 @@ def render_golden_code_table(codes_order: list[str], per_class: dict[str, Any]) 
         rows.append(
             {
                 "Код дефекта": code,
+                "Категория": CODE_CATEGORIES.get(code, "Общий"),
                 "Точность (Precision)": f"{stats.get('precision', 0.0) * 100:.2f}%",
                 "Полнота (Recall)": f"{stats.get('recall', 0.0) * 100:.2f}%",
                 "F1-Score": f"{stats.get('f1', 0.0) * 100:.2f}%",
@@ -239,6 +267,18 @@ def render_golden_code_table(codes_order: list[str], per_class: dict[str, Any]) 
             }
         )
     st.dataframe(pd.DataFrame(rows), use_container_width=True)
+
+    with st.expander("Архитектурный анализ категорий дефектов (Критические vs Спорные)"):
+        st.markdown(
+            """
+            * **Критические коды (Must-Have):** `UNKNOWN_TABLE`, `UNKNOWN_COLUMN`, `SCOPE`  
+              Ошибки структуры базы данных и запросы вне предметной области. Без их отсечения SQL-генератор падает с ошибкой базы или галлюцинирует. Точность здесь должна быть максимальной (достигнуто 85–100%).
+            * **Контекстные и семантические коды:** `ATTACH`, `VAGUE`, `MISSING_AGG`, `MISSING_VALUE`  
+              Неразрешенные местоимения без контекста («их», «его»), абстрактные прилагательные («лучшие») и отсутствие агрегатов. Необходимы для формирования диалога уточнения.
+            * **Спорные коды для Quality Gate:** `MISSING_LIMIT`, `MISSING_SORT`, `MISSING_TIME`, `MISSING_CRITERION`  
+              В чистом SQL запросы вроде `SELECT * FROM clients;` или `SELECT AVG(price) FROM products;` абсолютно валидны и исполнимы. Жесткая блокировка пользователя за отсутствие `LIMIT` или `WHERE` — антипаттерн UX. В реальной системе эти требования решаются downstream (автоподстановка `LIMIT 100` на бэкенде).
+            """
+        )
 
 
 def render_golden_mismatches(records: list[dict[str, Any]]) -> None:
@@ -270,34 +310,60 @@ def render_golden_mismatches(records: list[dict[str, Any]]) -> None:
 
 def render_golden_tab(model: NL2SQLQualityModel | None, tokenizer: Any, config: dict[str, Any]) -> None:
     st.subheader("Тестирование модели на эталонной выборке (Golden Test)")
-    st.markdown("Прогон 70 подготовленных вручную запросов для проверки точности бизнес-статуса и кодов дефектов.")
+    st.markdown("Сравнение работы модели на экспертно подготовленных запросах разного масштаба.")
 
-    c_thresh, c_btn = st.columns([1.5, 1.0])
-    with c_thresh:
-        threshold = st.slider("Порог отсечения для теста:", 0.1, 0.9, 0.5, 0.05, key="golden_threshold")
-    with c_btn:
+    col_ds, col_mode, col_thresh, col_btn = st.columns([1.6, 1.2, 1.2, 1.0])
+    with col_ds:
+        dataset_name = st.selectbox(
+            "Эталонный датасет:",
+            [
+                "Расширенный эталонный тест (172 примера)",
+                "Базовый эталонный тест (70 примеров)",
+            ],
+            key="golden_dataset_select",
+        )
+    with col_mode:
+        thresh_mode = st.radio(
+            "Режим порога:",
+            ["Фиксированный", "Калиброванный"],
+            horizontal=False,
+            key="golden_thresh_mode",
+        )
+    with col_thresh:
+        if thresh_mode == "Фиксированный":
+            threshold = st.slider("Порог отсечения:", 0.1, 0.9, 0.5, 0.05, key="golden_threshold")
+        else:
+            threshold = DEFAULT_PER_CLASS_THRESHOLDS
+            st.caption("Адаптивные пороги (0.20-0.50)")
+    with col_btn:
         st.write("")
         st.write("")
-        btn_run = st.button("Запустить Golden Test", type="primary", use_container_width=True)
+        btn_run = st.button("Запустить тест", type="primary", use_container_width=True)
+
+    is_expanded = "172" in dataset_name
+    target_data_file = GOLDEN_TEST_172_FILE if is_expanded else GOLDEN_TEST_70_FILE
+    target_report_file = GOLDEN_REPORT_172_FILE if is_expanded else GOLDEN_REPORT_70_FILE
+    state_key = f"golden_report_{target_data_file.stem}"
 
     if btn_run:
         if model is None or tokenizer is None:
             st.error("Файл модели best_model.pt не найден.")
             return
-        if not GOLDEN_TEST_FILE.exists():
-            st.error(f"Файл эталонного теста не найден: {GOLDEN_TEST_FILE}")
+        if not target_data_file.exists():
+            st.error(f"Файл эталонного теста не найден: {target_data_file}")
             return
 
         codes_order = config.get("codes_order", CODES_ORDER)
-        with st.spinner("Выполняется инференс по 70 эталонным запросам..."):
-            report = run_golden_evaluation(model, tokenizer, codes_order, GOLDEN_TEST_FILE, threshold)
-            save_report(GOLDEN_REPORT_FILE, report)
-            st.session_state["golden_report"] = report
+        sample_count = 172 if is_expanded else 70
+        with st.spinner(f"Выполняется инференс по {sample_count} эталонным запросам..."):
+            report = run_golden_evaluation(model, tokenizer, codes_order, target_data_file, threshold)
+            save_report(target_report_file, report)
+            st.session_state[state_key] = report
             st.success("Тестирование успешно завершено!")
 
-    report = st.session_state.get("golden_report")
-    if report is None and GOLDEN_REPORT_FILE.exists():
-        with open(GOLDEN_REPORT_FILE, "r", encoding="utf-8") as f:
+    report = st.session_state.get(state_key)
+    if report is None and target_report_file.exists():
+        with open(target_report_file, "r", encoding="utf-8") as f:
             report = json.load(f)
 
     if report is not None:
@@ -310,7 +376,7 @@ def render_golden_tab(model: NL2SQLQualityModel | None, tokenizer: Any, config: 
             render_golden_code_table(config.get("codes_order", CODES_ORDER), report.get("per_class_metrics", {}))
         render_golden_mismatches(report.get("records", []))
     else:
-        st.info("Нажмите кнопку 'Запустить Golden Test', чтобы выполнить тестирование модели.")
+        st.info("Нажмите кнопку 'Запустить тест', чтобы выполнить тестирование модели.")
 
 
 def render_benchmark_tab() -> None:

@@ -68,7 +68,8 @@ def calculate_class_weights(dataset: NL2SQLDataset, max_weight: float = 15.0) ->
     positives = np.zeros(len(dataset.CODES_ORDER), dtype=np.float32)
 
     for item in dataset.data:
-        for code in item.get("codes", []):
+        codes = item.get("codes") if "codes" in item else item.get("expected_codes", [])
+        for code in codes:
             if code in dataset.CODES_ORDER:
                 positives[dataset.CODES_ORDER.index(code)] += 1.0
 
