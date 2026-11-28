@@ -29,37 +29,39 @@ from src.schema_validator import SchemaValidator
 
 st.set_page_config(
     page_title="NL2SQL Quality Gate",
-    layout="wide",
-    initial_sidebar_state="expanded",
+    layout="centered",
+    initial_sidebar_state="collapsed",
 )
 
-MODEL_CHECKPOINT = PROJECT_ROOT / "models" / "best_model.pt"
-METRICS_REPORT_FILE = PROJECT_ROOT / "models" / "metrics_report.json"
-GOLDEN_TEST_FILE = PROJECT_ROOT / "data" / "golden_test.jsonl"
-GOLDEN_REPORT_FILE = PROJECT_ROOT / "models" / "golden_test_report.json"
-GOLDEN_TEST_70_FILE = PROJECT_ROOT / "data" / "golden_test_70.jsonl"
-GOLDEN_REPORT_70_FILE = PROJECT_ROOT / "models" / "golden_test_report_70.json"
+MODELS_DIR = PROJECT_ROOT / "models"
+METRICS_REPORT_FILE = MODELS_DIR / "metrics_report.json"
 GOLDEN_TEST_172_FILE = PROJECT_ROOT / "data" / "golden_test_172.jsonl"
-GOLDEN_REPORT_172_FILE = PROJECT_ROOT / "models" / "golden_test_report_172.json"
+GOLDEN_REPORT_172_FILE = MODELS_DIR / "golden_test_report_172.json"
 
 CODE_CATEGORIES: dict[str, str] = {
-    "UNKNOWN_TABLE": "Критический (Схема)",
-    "UNKNOWN_COLUMN": "Критический (Схема)",
-    "SCOPE": "Критический (Вне темы)",
+    "UNKNOWN_TABLE": "Схема БД",
+    "UNKNOWN_COLUMN": "Схема БД",
+    "SCOPE": "Вне темы БД",
     "ATTACH": "Контекст (Местоимения)",
     "VAGUE": "Семантика (Размытость)",
-    "MISSING_AGG": "Семантика (Агрегация)",
     "MISSING_VALUE": "Спецификация (Значение)",
-    "MISSING_TIME": "Спорный (Период дат)",
-    "MISSING_CRITERION": "Спорный (Фильтр WHERE)",
-    "MISSING_SORT": "Спорный (Сортировка)",
-    "MISSING_LIMIT": "Спорный (Лимит строк)",
+    "MISSING_TIME": "Период дат",
+    "MISSING_CRITERION": "Безопасность (WHERE)",
+    "RANKING_SPEC": "Ранжирование (Топ / Сортировка)",
+    "MISSING_AGG": "Семантика (Агрегация)",
+    "MISSING_SORT": "Сортировка",
+    "MISSING_LIMIT": "Лимит строк",
 }
 
 SAMPLE_SCHEMAS: dict[str, str] = {
     "Сотрудники и отделы (HR)": (
         "TABLE departments: department_id INT PRIMARY KEY, name VARCHAR, floor INT | "
         "TABLE employees: employee_id INT PRIMARY KEY, name VARCHAR, salary INT, department_id INT, status VARCHAR"
+    ),
+    "Электронная коммерция (Shop)": (
+        "TABLE customers: id INT PRIMARY KEY, name VARCHAR, phone VARCHAR, email VARCHAR, city VARCHAR | "
+        "TABLE products: product_id INT PRIMARY KEY, name VARCHAR, price INT, category_id INT | "
+        "TABLE orders: order_id INT PRIMARY KEY, customer_id INT, order_date DATE, total_amount INT, status VARCHAR"
     ),
     "Авиакомпании и рейсы (Flights)": (
         "TABLE airports: airport_id INT PRIMARY KEY, city VARCHAR, code VARCHAR | "
@@ -69,90 +71,41 @@ SAMPLE_SCHEMAS: dict[str, str] = {
         "TABLE doctors: doctor_id INT PRIMARY KEY, name VARCHAR, specialty VARCHAR, salary INT | "
         "TABLE appointments: appointment_id INT PRIMARY KEY, doctor_id INT, patient_id INT, appointment_date DATE"
     ),
-    "Электронная коммерция (Shop)": (
-        "TABLE products: product_id INT PRIMARY KEY, name VARCHAR, price INT, category_id INT | "
-        "TABLE orders: order_id INT PRIMARY KEY, customer_id INT, order_date DATE, total_amount INT, status VARCHAR"
-    ),
 }
 
-PRESET_QUERIES: list[dict[str, str]] = [
-    {
-        "label": "1. [CLEAR] Полный выбор данных без условий",
-        "query": "Покажи всех сотрудников",
-        "schema_key": "Сотрудники и отделы (HR)",
-        "db_type": "postgresql",
-    },
-    {
-        "label": "2. [CLEAR] Выборка с точным условием WHERE",
-        "query": "Покажи сотрудников где salary равен 50000",
-        "schema_key": "Сотрудники и отделы (HR)",
-        "db_type": "postgresql",
-    },
-    {
-        "label": "3. [INCOMPLETE] Пропущен временной интервал и лимит",
-        "query": "Выведи свежие заказы",
-        "schema_key": "Электронная коммерция (Shop)",
-        "db_type": "postgresql",
-    },
-    {
-        "label": "4. [INCOMPLETE] Не указано поле сортировки топа",
-        "query": "Покажи топ 5 врачей",
-        "schema_key": "Медицинская клиника (Hospital)",
-        "db_type": "mysql",
-    },
-    {
-        "label": "5. [INCOMPLETE] Изменение всех строк без условия WHERE",
-        "query": "Обнови статус всех сотрудников на активен",
-        "schema_key": "Сотрудники и отделы (HR)",
-        "db_type": "postgresql",
-    },
-    {
-        "label": "6. [AMBIGUOUS] Несуществующая таблица в схеме",
-        "query": "Покажи список из таблицы warehouses где id=10",
-        "schema_key": "Электронная коммерция (Shop)",
-        "db_type": "sqlserver",
-    },
-    {
-        "label": "7. [AMBIGUOUS] Несуществующий атрибут в таблице",
-        "query": "Выведи врачей отсортированных по internal_rating",
-        "schema_key": "Медицинская клиника (Hospital)",
-        "db_type": "postgresql",
-    },
-    {
-        "label": "8. [AMBIGUOUS] Размытые субъективные определения",
-        "query": "Покажи самых лучших и прибыльных сотрудников",
-        "schema_key": "Сотрудники и отделы (HR)",
-        "db_type": "postgresql",
-    },
-    {
-        "label": "9. [AMBIGUOUS] Запрос вне контекста базы данных",
-        "query": "Какая завтра погода в Москве?",
-        "schema_key": "Сотрудники и отделы (HR)",
-        "db_type": "postgresql",
-    },
-]
+STATUS_LABELS: dict[str, str] = {
+    "clear": "CLEAR (Понятный)",
+    "incomplete": "INCOMPLETE (Неполный)",
+    "ambiguous": "AMBIGUOUS (Неоднозначный)",
+}
+
+
+def get_available_models() -> list[Path]:
+    if not MODELS_DIR.exists():
+        return []
+    return sorted(MODELS_DIR.glob("*.pt"), key=lambda model_path: (model_path.name != "best_model.pt", model_path.name))
+
+
+def load_tokenizer(model_name: str) -> Any:
+    try:
+        return AutoTokenizer.from_pretrained(model_name, local_files_only=True)
+    except Exception:
+        return AutoTokenizer.from_pretrained(model_name)
 
 
 @st.cache_resource
-def load_runtime_artifacts() -> tuple[NL2SQLQualityModel | None, Any, dict[str, Any]]:
-    ckpt_path = MODEL_CHECKPOINT
-    if not ckpt_path.exists():
-        fallback = ckpt_path.parent / "best_model_v5.pt"
-        if fallback.exists():
-            ckpt_path = fallback
-        else:
-            return None, None, {}
+def load_runtime_artifacts(checkpoint_path_str: str) -> tuple[NL2SQLQualityModel | None, Any, dict[str, Any]]:
+    checkpoint_path = Path(checkpoint_path_str)
+    if not checkpoint_path.exists():
+        return None, None, {}
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    checkpoint = torch.load(ckpt_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device)
     config = checkpoint.get("config", {})
     model_name = config.get("model_name", "cointegrated/rubert-tiny2")
     codes = config.get("codes_order", CODES_ORDER)
 
-    try:
-        tokenizer = AutoTokenizer.from_pretrained(model_name, local_files_only=True)
-    except Exception:
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-
+    tokenizer = load_tokenizer(model_name)
     model = NL2SQLQualityModel(model_name=model_name, num_codes=len(codes)).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
@@ -168,354 +121,331 @@ def run_prediction(
 ) -> tuple[list[float], float]:
     device = next(model.parameters()).device
     prompt = f"СУБД: {db_type}. Запрос: {question}"
-    inputs = tokenizer(
-        prompt,
-        schema,
-        truncation="only_second",
-        max_length=512,
-        return_tensors="pt",
-    )
-    inputs = {k: v.to(device) for k, v in inputs.items()}
+    encoded = tokenizer(prompt, schema, truncation="only_second", max_length=512, return_tensors="pt")
+    inputs = {key: tensor.to(device) for key, tensor in encoded.items()}
 
-    t0 = time.perf_counter()
+    start_time = time.perf_counter()
     with torch.no_grad():
-        probs = model.predict_probabilities(**inputs)
+        probabilities = model.predict_probabilities(**inputs)
     if device.type == "cuda":
         torch.cuda.synchronize()
-    latency_ms = (time.perf_counter() - t0) * 1000.0
-    return probs.squeeze(0).cpu().tolist(), latency_ms
+    latency_ms = (time.perf_counter() - start_time) * 1000.0
+    return probabilities.squeeze(0).cpu().tolist(), latency_ms
 
 
 def apply_typo(text: str) -> str:
     words = text.split()
     if not words:
         return text
-    target_idx = random.randint(0, len(words) - 1)
-    w = words[target_idx]
-    if len(w) > 4:
-        idx = random.randint(1, len(w) - 3)
-        words[target_idx] = w[:idx] + w[idx + 1] + w[idx] + w[idx + 2:]
-    elif len(w) > 2:
-        words[target_idx] = w + w[-1]
+    target_index = random.randint(0, len(words) - 1)
+    selected_word = words[target_index]
+    if len(selected_word) > 4:
+        swap_index = random.randint(1, len(selected_word) - 3)
+        words[target_index] = (
+            selected_word[:swap_index]
+            + selected_word[swap_index + 1]
+            + selected_word[swap_index]
+            + selected_word[swap_index + 2:]
+        )
+    elif len(selected_word) > 2:
+        words[target_index] = selected_word + selected_word[-1]
     return " ".join(words)
 
 
-def render_probability_chart(codes: list[str], probs: list[float], threshold: float) -> None:
-    data = pd.DataFrame(
+def build_chart_dataframe(codes: list[str], probabilities: list[float], threshold: float) -> pd.DataFrame:
+    return pd.DataFrame(
         {
             "Дефект": codes,
-            "Вероятность (%)": [round(p * 100.0, 1) for p in probs],
-            "Статус": ["Превышен порог" if p >= threshold else "Ниже порога" for p in probs],
+            "Вероятность (%)": [round(probability * 100.0, 1) for probability in probabilities],
+            "Статус": ["Превышен порог" if probability >= threshold else "Ниже порога" for probability in probabilities],
         }
     )
-    chart = (
-        alt.Chart(data)
-        .mark_bar(cornerRadius=3)
-        .encode(
-            x=alt.X("Вероятность (%):Q", scale=alt.Scale(domain=[0, 100])),
-            y=alt.Y("Дефект:N", sort="-x"),
-            color=alt.Color(
-                "Статус:N",
-                scale=alt.Scale(
-                    domain=["Превышен порог", "Ниже порога"],
-                    range=["#dc2626", "#2563eb"],
-                ),
-                legend=alt.Legend(title="Статус порога"),
-            ),
-            tooltip=["Дефект", "Вероятность (%)", "Статус"],
-        )
-        .properties(height=340)
-    )
-    rule = alt.Chart(pd.DataFrame({"x": [threshold * 100.0]})).mark_rule(
+
+
+def render_probability_chart(codes: list[str], probabilities: list[float], threshold: float) -> None:
+    chart_data = build_chart_dataframe(codes, probabilities, threshold)
+    color_scale = alt.Scale(domain=["Превышен порог", "Ниже порога"], range=["#dc2626", "#2563eb"])
+    bar_chart = alt.Chart(chart_data).mark_bar(cornerRadius=3).encode(
+        x=alt.X("Вероятность (%):Q", scale=alt.Scale(domain=[0, 100])),
+        y=alt.Y("Дефект:N", sort="-x"),
+        color=alt.Color("Статус:N", scale=color_scale, legend=alt.Legend(title="Статус порога")),
+        tooltip=["Дефект", "Вероятность (%)", "Статус"],
+    ).properties(height=320)
+    threshold_rule = alt.Chart(pd.DataFrame({"x": [threshold * 100.0]})).mark_rule(
         color="#ea580c", strokeDash=[4, 4], size=2
     ).encode(x="x:Q")
+    st.altair_chart(bar_chart + threshold_rule, use_container_width=True)
 
-    st.altair_chart(chart + rule, use_container_width=True)
+
+def format_percentage(value: float) -> str:
+    return f"{value * 100:.2f}%"
 
 
 def render_golden_summary(report: dict[str, Any]) -> None:
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Точность статуса", f"{report.get('status_accuracy', 0.0) * 100:.2f}%")
-    c2.metric("Точное совпадение кодов (EM)", f"{report.get('code_subset_accuracy', 0.0) * 100:.2f}%")
-    c3.metric("Macro F1", f"{report.get('macro_f1', 0.0) * 100:.2f}%")
-    c4.metric("Средняя задержка", f"{report.get('avg_latency', 0.0):.2f} мс")
+    status_col, exact_col, f1_col, latency_col = st.columns(4)
+    status_col.metric("Точность статуса", format_percentage(report.get("status_accuracy", 0.0)))
+    exact_col.metric("Точное совпадение (EM)", format_percentage(report.get("code_subset_accuracy", 0.0)))
+    f1_col.metric("Macro F1", format_percentage(report.get("macro_f1", 0.0)))
+    latency_col.metric("Задержка", f"{report.get('avg_latency', 0.0):.2f} мс")
 
 
-def render_golden_matrix(cm: list[list[int]]) -> None:
-    st.markdown("##### Матрица ошибок бизнес-статусов (Confusion Matrix)")
-    df = pd.DataFrame(
-        cm,
+def render_golden_matrix(confusion_matrix: list[list[int]]) -> None:
+    st.markdown("##### Матрица ошибок бизнес-статусов")
+    matrix_df = pd.DataFrame(
+        confusion_matrix,
         index=["Факт: CLEAR", "Факт: INCOMPLETE", "Факт: AMBIGUOUS"],
         columns=["Прогноз: CLEAR", "Прогноз: INCOMPLETE", "Прогноз: AMBIGUOUS"],
     )
-    st.dataframe(df, use_container_width=True)
+    st.dataframe(matrix_df)
 
 
-def render_golden_code_table(codes_order: list[str], per_class: dict[str, Any]) -> None:
-    st.markdown("##### Детализация по 11 кодам дефектов")
+def build_class_metric_row(code: str, stats: dict[str, Any], pr_auc: float | None = None) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "Код дефекта": code,
+        "Precision": format_percentage(stats.get("precision", 0.0)),
+        "Recall": format_percentage(stats.get("recall", 0.0)),
+        "F1-Score": format_percentage(stats.get("f1", 0.0)),
+    }
+    if pr_auc is not None:
+        row["PR-AUC"] = format_percentage(pr_auc)
+    row["Support"] = int(stats.get("support", 0))
+    return row
+
+
+def render_golden_code_table(codes_order: list[str], per_class_metrics: dict[str, Any]) -> None:
+    st.markdown(f"##### Детализация по {len(codes_order)} кодам дефектов")
     rows = []
     for code in codes_order:
-        stats = per_class.get(code, {})
-        rows.append(
-            {
-                "Код дефекта": code,
-                "Категория": CODE_CATEGORIES.get(code, "Общий"),
-                "Точность (Precision)": f"{stats.get('precision', 0.0) * 100:.2f}%",
-                "Полнота (Recall)": f"{stats.get('recall', 0.0) * 100:.2f}%",
-                "F1-Score": f"{stats.get('f1', 0.0) * 100:.2f}%",
-                "Примеров (Support)": int(stats.get("support", 0)),
-            }
-        )
-    st.dataframe(pd.DataFrame(rows), use_container_width=True)
+        row = build_class_metric_row(code, per_class_metrics.get(code, {}))
+        row["Категория"] = CODE_CATEGORIES.get(code, "Общий")
+        rows.append(row)
+    st.dataframe(pd.DataFrame(rows))
 
-    with st.expander("Архитектурный анализ категорий дефектов (Критические vs Спорные)"):
-        st.markdown(
-            """
-            * **Критические коды (Must-Have):** `UNKNOWN_TABLE`, `UNKNOWN_COLUMN`, `SCOPE`  
-              Ошибки структуры базы данных и запросы вне предметной области. Без их отсечения SQL-генератор падает с ошибкой базы или галлюцинирует. Точность здесь должна быть максимальной (достигнуто 85–100%).
-            * **Контекстные и семантические коды:** `ATTACH`, `VAGUE`, `MISSING_AGG`, `MISSING_VALUE`  
-              Неразрешенные местоимения без контекста («их», «его»), абстрактные прилагательные («лучшие») и отсутствие агрегатов. Необходимы для формирования диалога уточнения.
-            * **Спорные коды для Quality Gate:** `MISSING_LIMIT`, `MISSING_SORT`, `MISSING_TIME`, `MISSING_CRITERION`  
-              В чистом SQL запросы вроде `SELECT * FROM clients;` или `SELECT AVG(price) FROM products;` абсолютно валидны и исполнимы. Жесткая блокировка пользователя за отсутствие `LIMIT` или `WHERE` — антипаттерн UX. В реальной системе эти требования решаются downstream (автоподстановка `LIMIT 100` на бэкенде).
-            """
-        )
+
+def render_golden_record_item(record: dict[str, Any]) -> None:
+    is_matched = record["status_match"] and record["code_exact_match"]
+    prefix = "[OK]" if is_matched else "[РАСХОЖДЕНИЕ]"
+    title = f"{prefix} {record['id']}: {record['question']}"
+    with st.expander(title, expanded=not is_matched):
+        st.markdown(f"**Ожидаемый статус:** `{record['expected_status']}`")
+        st.markdown(f"**Предсказанный статус:** `{record['pred_status']}`")
+        st.markdown(f"**Ожидаемые коды:** `{record['expected_codes']}`")
+        st.markdown(f"**Предсказанные коды:** `{record['pred_codes']}`")
+        st.markdown(f"**Схема:** `{record.get('schema', '')}`")
+        active_probs = {
+            code: f"{prob * 100:.1f}%"
+            for code, prob in record["probabilities"].items()
+            if prob >= 0.15 or code in record["expected_codes"]
+        }
+        st.markdown(f"**Вероятности кодов:** `{active_probs}`")
 
 
 def render_golden_mismatches(records: list[dict[str, Any]]) -> None:
-    st.markdown("##### Детальный анализ примеров")
-    mismatches = [r for r in records if not (r["status_match"] and r["code_exact_match"])]
+    st.markdown("Детальный анализ примеров")
+    mismatches = [record for record in records if not (record["status_match"] and record["code_exact_match"])]
     view_mode = st.radio(
         "Фильтр отображения:",
         [f"Только расхождения ({len(mismatches)})", f"Все примеры ({len(records)})"],
         horizontal=True,
     )
     items_to_show = mismatches if "Только расхождения" in view_mode else records
-
-    for item in items_to_show:
-        is_ok = item["status_match"] and item["code_exact_match"]
-        tag = "[OK]" if is_ok else "[РАСХОЖДЕНИЕ]"
-        title = f"{tag} {item['id']}: {item['question']}"
-        with st.expander(title, expanded=not is_ok):
-            col_l, col_r = st.columns(2)
-            with col_l:
-                st.markdown(f"**Ожидаемый статус:** `{item['expected_status']}`")
-                st.markdown(f"**Предсказанный статус:** `{item['pred_status']}`")
-                st.markdown(f"**Схема:** `{item.get('schema', '')}`")
-            with col_r:
-                st.markdown(f"**Ожидаемые коды:** `{item['expected_codes']}`")
-                st.markdown(f"**Предсказанные коды:** `{item['pred_codes']}`")
-                top = {c: f"{p*100:.1f}%" for c, p in item["probabilities"].items() if p >= 0.15 or c in item["expected_codes"]}
-                st.markdown(f"**Вероятности кодов:** `{top}`")
+    for record in items_to_show:
+        render_golden_record_item(record)
 
 
-def render_golden_tab(model: NL2SQLQualityModel | None, tokenizer: Any, config: dict[str, Any]) -> None:
-    st.subheader("Тестирование модели на эталонной выборке (Golden Test)")
-    st.markdown("Сравнение работы модели на экспертно подготовленных запросах разного масштаба.")
+def reset_calibrated_thresholds(codes_order: list[str]) -> None:
+    for code in codes_order:
+        st.session_state[f"calib_slider_{code}"] = DEFAULT_PER_CLASS_THRESHOLDS.get(code, 0.50)
 
-    col_ds, col_mode, col_thresh, col_btn = st.columns([1.6, 1.2, 1.2, 1.0])
-    with col_ds:
-        dataset_name = st.selectbox(
-            "Эталонный датасет:",
-            [
-                "Расширенный эталонный тест (172 примера)",
-                "Базовый эталонный тест (70 примеров)",
-            ],
-            key="golden_dataset_select",
-        )
-    with col_mode:
-        thresh_mode = st.radio(
-            "Режим порога:",
-            ["Фиксированный", "Калиброванный"],
-            horizontal=False,
-            key="golden_thresh_mode",
-        )
-    with col_thresh:
-        if thresh_mode == "Фиксированный":
-            threshold = st.slider("Порог отсечения:", 0.1, 0.9, 0.5, 0.05, key="golden_threshold")
-        else:
-            threshold = DEFAULT_PER_CLASS_THRESHOLDS
-            st.caption("Адаптивные пороги (0.20-0.50)")
-    with col_btn:
-        st.write("")
-        st.write("")
-        btn_run = st.button("Запустить тест", type="primary", use_container_width=True)
 
-    is_expanded = "172" in dataset_name
-    target_data_file = GOLDEN_TEST_172_FILE if is_expanded else GOLDEN_TEST_70_FILE
-    target_report_file = GOLDEN_REPORT_172_FILE if is_expanded else GOLDEN_REPORT_70_FILE
-    state_key = f"golden_report_{target_data_file.stem}"
+def render_calibrated_sliders(codes_order: list[str]) -> dict[str, float]:
+    custom_thresholds: dict[str, float] = {}
+    with st.expander("Настройка порогов по классам", expanded=True):
+        st.button("Сбросить к автонастройке", on_click=reset_calibrated_thresholds, args=(codes_order,))
+        for code in codes_order:
+            slider_key = f"calib_slider_{code}"
+            if slider_key not in st.session_state:
+                st.session_state[slider_key] = DEFAULT_PER_CLASS_THRESHOLDS.get(code, 0.50)
+            custom_thresholds[code] = st.slider(code, min_value=0.05, max_value=0.95, step=0.05, key=slider_key)
+    return custom_thresholds
 
-    if btn_run:
-        if model is None or tokenizer is None:
-            st.error("Файл модели best_model.pt не найден.")
-            return
-        if not target_data_file.exists():
-            st.error(f"Файл эталонного теста не найден: {target_data_file}")
-            return
 
-        codes_order = config.get("codes_order", CODES_ORDER)
-        sample_count = 172 if is_expanded else 70
-        with st.spinner(f"Выполняется инференс по {sample_count} эталонным запросам..."):
-            report = run_golden_evaluation(model, tokenizer, codes_order, target_data_file, threshold)
-            save_report(target_report_file, report)
-            st.session_state[state_key] = report
-            st.success("Тестирование успешно завершено!")
+def select_golden_threshold(codes_order: list[str]) -> float | dict[str, float]:
+    threshold_mode = st.radio("Режим порога:", ["Фиксированный", "Калиброванный"], horizontal=True, key="golden_thresh_mode")
+    if threshold_mode == "Фиксированный":
+        return st.slider("Общий порог отсечения:", 0.1, 0.9, 0.5, 0.05, key="golden_threshold")
+    return render_calibrated_sliders(codes_order)
 
-    report = st.session_state.get(state_key)
-    if report is None and target_report_file.exists():
-        with open(target_report_file, "r", encoding="utf-8") as f:
-            report = json.load(f)
 
-    if report is not None:
-        st.markdown("---")
-        render_golden_summary(report)
-        col_m1, col_m2 = st.columns([1.0, 1.2])
-        with col_m1:
-            render_golden_matrix(report["confusion_matrix"])
-        with col_m2:
-            render_golden_code_table(config.get("codes_order", CODES_ORDER), report.get("per_class_metrics", {}))
-        render_golden_mismatches(report.get("records", []))
-    else:
-        st.info("Нажмите кнопку 'Запустить тест', чтобы выполнить тестирование модели.")
+def execute_golden_run(
+    model: NL2SQLQualityModel | None, tokenizer: Any, codes_order: list[str],
+    threshold: float | dict[str, float], state_key: str,
+) -> None:
+    if model is None or tokenizer is None:
+        st.error("Модель не найдена или не загружена.")
+        return
+    if not GOLDEN_TEST_172_FILE.exists():
+        st.error(f"Файл эталонного теста не найден: {GOLDEN_TEST_172_FILE}")
+        return
+    with st.spinner("Выполняется тестирование по 172 эталонным запросам..."):
+        report = run_golden_evaluation(model, tokenizer, codes_order, GOLDEN_TEST_172_FILE, threshold)
+        save_report(GOLDEN_REPORT_172_FILE, report)
+        st.session_state[state_key] = report
+        st.success("Тестирование успешно завершено!")
+
+
+def load_or_run_golden_report(
+    model: NL2SQLQualityModel | None, tokenizer: Any, codes_order: list[str],
+    threshold: float | dict[str, float], model_key: str,
+) -> dict[str, Any] | None:
+    state_key = f"golden_report_172_{model_key}"
+    if st.button("Запустить тест", type="primary", key="golden_run_btn"):
+        execute_golden_run(model, tokenizer, codes_order, threshold, state_key)
+    if state_key in st.session_state:
+        return st.session_state[state_key]
+    if GOLDEN_REPORT_172_FILE.exists():
+        with open(GOLDEN_REPORT_172_FILE, "r", encoding="utf-8") as report_file:
+            return json.load(report_file)
+    return None
+
+
+def render_golden_tab(model: NL2SQLQualityModel | None, tokenizer: Any, config: dict[str, Any], model_key: str) -> None:
+    codes_order = config.get("codes_order", CODES_ORDER)
+    st.text_input(
+        "Файл эталонного теста:",
+        value=f"{GOLDEN_TEST_172_FILE.name} (172 примера)",
+        disabled=True,
+        key="golden_file_display",
+    )
+    threshold = select_golden_threshold(codes_order)
+    report = load_or_run_golden_report(model, tokenizer, codes_order, threshold, model_key)
+
+    if report is None:
+        st.info("Нажмите кнопку «Запустить тест», чтобы выполнить проверку модели.")
+        return
+
+    st.markdown("---")
+    render_golden_summary(report)
+    render_golden_matrix(report["confusion_matrix"])
+    render_golden_code_table(codes_order, report.get("per_class_metrics", {}))
+    render_golden_mismatches(report.get("records", []))
+
+
+def render_benchmark_summary(report: dict[str, Any]) -> None:
+    f1_col, exact_col, false_clear_col, ece_col = st.columns(4)
+    multilabel = report.get("multilabel", {})
+    clarity = report.get("clarity", {})
+    calibration = report.get("calibration", {})
+    f1_col.metric("Macro F1", format_percentage(multilabel.get("macro_f1", 0.0)))
+    exact_col.metric("Exact Match", format_percentage(multilabel.get("subset_accuracy", 0.0)))
+    false_clear_col.metric("False Clear", f"{clarity.get('false_clear_rate', 0.0):.2f}%")
+    ece_col.metric("ECE", f"{calibration.get('expected_calibration_error', 0.0):.4f}")
 
 
 def render_benchmark_tab() -> None:
-    st.subheader("Показатели качества модели (контрольная выборка)")
     if not METRICS_REPORT_FILE.exists():
         st.info("Файл metrics_report.json не найден.")
         return
-
-    with open(METRICS_REPORT_FILE, "r", encoding="utf-8") as f:
-        report = json.load(f)
-
-    c1, c2, c3, c4 = st.columns(4)
-    multi = report.get("multilabel", {})
-    clarity = report.get("clarity", {})
-    calib = report.get("calibration", {})
-
-    c1.metric("Macro F1", f"{multi.get('macro_f1', 0.0) * 100:.2f}%")
-    c2.metric("Exact Match", f"{multi.get('subset_accuracy', 0.0) * 100:.2f}%")
-    c3.metric("Ложный пропуск (False Clear)", f"{clarity.get('false_clear_rate', 0.0):.2f}%")
-    c4.metric("Ошибка калибровки (ECE)", f"{calib.get('expected_calibration_error', 0.0):.4f}")
-
+    with open(METRICS_REPORT_FILE, "r", encoding="utf-8") as report_file:
+        report = json.load(report_file)
+    render_benchmark_summary(report)
     st.markdown("##### Детализация по классам дефектов")
     per_class = report.get("per_class", {})
     pr_auc_data = report.get("pr_auc", {}).get("per_class_pr_auc", {})
+    rows = [build_class_metric_row(code, stats, pr_auc_data.get(code, 0.0)) for code, stats in per_class.items()]
+    st.dataframe(pd.DataFrame(rows))
 
-    rows = []
-    for code, stats in per_class.items():
-        rows.append(
-            {
-                "Код дефекта": code,
-                "Точность (Precision)": f"{stats.get('precision', 0.0) * 100:.2f}%",
-                "Полнота (Recall)": f"{stats.get('recall', 0.0) * 100:.2f}%",
-                "F1-Score": f"{stats.get('f1', 0.0) * 100:.2f}%",
-                "PR-AUC": f"{pr_auc_data.get(code, 0.0) * 100:.2f}%",
-                "Примеров (Support)": int(stats.get("support", 0)),
-            }
-        )
-    st.dataframe(pd.DataFrame(rows), use_container_width=True)
+
+def on_schema_preset_change() -> None:
+    selected_name = st.session_state.get("playground_schema_preset")
+    if selected_name in SAMPLE_SCHEMAS:
+        st.session_state["playground_schema_text"] = SAMPLE_SCHEMAS[selected_name]
+
+
+def render_playground_inputs() -> tuple[str, str, str, float, bool, bool]:
+    if "playground_schema_text" not in st.session_state:
+        st.session_state["playground_schema_text"] = next(iter(SAMPLE_SCHEMAS.values()))
+
+    st.selectbox("Заготовленная схема БД:", list(SAMPLE_SCHEMAS.keys()), key="playground_schema_preset", on_change=on_schema_preset_change)
+    schema_text = st.text_area("Схема базы данных (DDL):", height=100, key="playground_schema_text")
+    selected_db = st.selectbox("СУБД:", ["postgresql", "mysql", "sqlserver"], key="playground_db")
+    threshold = st.slider("Порог отсечения:", 0.1, 0.9, 0.5, 0.05, key="playground_threshold")
+    user_query = st.text_area("Запрос пользователя:", height=90, placeholder="Введите текст запроса", key="playground_query_text")
+    check_clicked = st.button("Проверить запрос", type="primary")
+    typo_clicked = st.button("Внести опечатку")
+    return user_query, schema_text, selected_db, threshold, check_clicked, typo_clicked
+
+
+def render_detected_remarks(result: dict[str, Any]) -> None:
+    st.markdown("##### Выявленные замечания:")
+    if not result["detected_codes"]:
+        st.success("Запрос понятен и готов к генерации SQL.")
+        return
+    for code, reason, clarification in zip(
+        result["detected_codes"], result["reasons"], result["suggested_clarifications"]
+    ):
+        with st.expander(code, expanded=True):
+            st.markdown(f"**Причина:** {reason}")
+            st.markdown(f"**Рекомендация:** {clarification}")
+
+
+def render_playground_results(
+    result: dict[str, Any], codes_order: list[str], probabilities: list[float], threshold: float, latency_ms: float
+) -> None:
+    st.markdown("---")
+    status_col, score_col, count_col, latency_col = st.columns(4)
+    status = result["ambiguity_status"]
+    status_col.metric("Статус", STATUS_LABELS.get(status, status))
+    score_col.metric("Оценка полноты", f"{result['completeness_score']:.2f} / 1.00")
+    count_col.metric("Дефектов найдено", len(result["detected_codes"]))
+    latency_col.metric("Время анализа", f"{latency_ms:.2f} мс")
+    st.markdown("Вероятности по дефектам:")
+    render_probability_chart(codes_order, probabilities, threshold)
+    render_detected_remarks(result)
 
 
 def render_playground_tab(model: NL2SQLQualityModel | None, tokenizer: Any, config: dict[str, Any]) -> None:
-    st.sidebar.header("Параметры проверки")
-    selected_db = st.sidebar.selectbox("СУБД:", ["postgresql", "mysql", "sqlserver"])
-    threshold = st.sidebar.slider("Порог отсечения:", 0.1, 0.9, 0.5, 0.05)
-
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("Готовые сценарии:")
-    preset_labels = ["-- Ввести свой запрос --"] + [p["label"] for p in PRESET_QUERIES]
-    selected_preset_label = st.sidebar.selectbox("Выбор сценария:", preset_labels)
-
-    current_query = ""
-    current_schema = SAMPLE_SCHEMAS["Сотрудники и отделы (HR)"]
-
-    if selected_preset_label != "-- Ввести свой запрос --":
-        matched = next(p for p in PRESET_QUERIES if p["label"] == selected_preset_label)
-        current_query = matched["query"]
-        current_schema = SAMPLE_SCHEMAS.get(matched["schema_key"], current_schema)
-        selected_db = matched["db_type"]
-
-    col_input, col_schema = st.columns([1.2, 1.0])
-    with col_input:
-        user_query = st.text_area(
-            "Запрос пользователя:",
-            value=current_query,
-            height=100,
-            placeholder="Введите текст запроса",
-        )
-        b_check, b_typo = st.columns(2)
-        btn_check = b_check.button("Проверить запрос", type="primary", use_container_width=True)
-        btn_typo = b_typo.button("Внести опечатку", use_container_width=True)
-
-    with col_schema:
-        schema_text = st.text_area(
-            "Схема базы данных (DDL):",
-            value=current_schema,
-            height=100,
-        )
-
-    if btn_typo and user_query:
+    user_query, schema_text, selected_db, threshold, check_clicked, typo_clicked = render_playground_inputs()
+    if typo_clicked and user_query:
         user_query = apply_typo(user_query)
         st.info(f"Запрос с опечаткой: {user_query}")
-        btn_check = True
+        check_clicked = True
+    if not check_clicked:
+        return
+    if not user_query.strip() or model is None or tokenizer is None:
+        st.warning("Проверьте ввод запроса и наличие загруженной модели.")
+        return
+    codes_order = config.get("codes_order", CODES_ORDER)
+    syntax_codes = SchemaValidator(schema_text).validate_query(user_query)
+    probabilities, latency_ms = run_prediction(model, tokenizer, user_query, selected_db, schema_text)
+    result = postprocess_predictions(probabilities, codes_order, thresholds=threshold, syntax_codes=syntax_codes)
+    render_playground_results(result, codes_order, probabilities, threshold, latency_ms)
 
-    if btn_check:
-        if not user_query.strip():
-            st.warning("Введите текст запроса.")
-            return
-        if model is None or tokenizer is None:
-            st.error("Файл модели best_model.pt не найден.")
-            return
 
-        codes_order = config.get("codes_order", CODES_ORDER)
-        validator = SchemaValidator(schema_text)
-        syntax_codes = validator.validate_query(user_query)
-        probs, latency_ms = run_prediction(model, tokenizer, user_query, selected_db, schema_text)
-        result = postprocess_predictions(probs, codes_order, thresholds=threshold, syntax_codes=syntax_codes)
-
-        st.markdown("---")
-        m1, m2, m3, m4 = st.columns(4)
-        status = result["ambiguity_status"]
-        status_label = {"clear": "CLEAR (Понятный)", "incomplete": "INCOMPLETE (Неполный)", "ambiguous": "AMBIGUOUS (Неоднозначный)"}
-        m1.metric("Статус", status_label.get(status, status))
-        m2.metric("Оценка полноты", f"{result['completeness_score']:.2f} / 1.00")
-        m3.metric("Дефектов найдено", len(result["detected_codes"]))
-        m4.metric("Время анализа", f"{latency_ms:.2f} мс")
-
-        res_col1, res_col2 = st.columns([1.1, 1.0])
-        with res_col1:
-            st.markdown("##### Вероятности по дефектам:")
-            render_probability_chart(codes_order, probs, threshold)
-
-        with res_col2:
-            st.markdown("##### Выявленные замечания:")
-            if result["detected_codes"]:
-                for code, reason, clar in zip(
-                    result["detected_codes"], result["reasons"], result["suggested_clarifications"]
-                ):
-                    with st.expander(code, expanded=True):
-                        st.markdown(f"**Причина:** {reason}")
-                        st.markdown(f"**Рекомендация:** {clar}")
-            else:
-                st.success("Запрос понятен и готов к генерации SQL.")
+def select_model_checkpoint() -> tuple[str, Path] | None:
+    available_models = get_available_models()
+    if not available_models:
+        st.error("В папке backend/models не найдено ни одного файла модели (*.pt).")
+        return None
+    model_names = [model_path.name for model_path in available_models]
+    selected_name = st.selectbox("Выбор модели:", model_names, key="selected_model_file")
+    selected_path = next(model_path for model_path in available_models if model_path.name == selected_name)
+    return selected_name, selected_path
 
 
 def main() -> None:
-    st.title("NL2SQL Quality Gate — Панель тестирования")
-    model, tokenizer, config = load_runtime_artifacts()
-    tab_play, tab_golden, tab_metrics = st.tabs([
-        "Проверка запроса",
-        "Эталонный тест (Golden Test)",
-        "Метрики обучения",
+    selection = select_model_checkpoint()
+    if selection is None:
+        return
+    selected_model_name, selected_model_path = selection
+    model, tokenizer, config = load_runtime_artifacts(str(selected_model_path))
+    tab_playground, tab_golden, tab_metrics = st.tabs([
+        "Проверка запроса", "Эталонный тест (Golden Test)", "Метрики обучения"
     ])
-
-    with tab_play:
+    with tab_playground:
         render_playground_tab(model, tokenizer, config)
-
     with tab_golden:
-        render_golden_tab(model, tokenizer, config)
-
+        render_golden_tab(model, tokenizer, config, selected_model_name)
     with tab_metrics:
         render_benchmark_tab()
 

@@ -1,5 +1,9 @@
 data
 db
+*.pt
+*.rar
+*.json
+*.tar.gz
 # Created by https://www.toptal.com/developers/gitignore/api/python,react
 # Edit at https://www.toptal.com/developers/gitignore?templates=python,react
 

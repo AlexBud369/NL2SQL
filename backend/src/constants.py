@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+# 9 ортогональных классов дефектов качества NL2SQL запросов:
+# 1. Ошибки схемы и домена (CRITICAL): UNKNOWN_TABLE, UNKNOWN_COLUMN, SCOPE
+# 2. Ошибки синтаксиса и безопасности: MISSING_VALUE, MISSING_CRITERION
+# 3. Ошибки семантики и контекста: VAGUE, ATTACH, MISSING_TIME
+# 4. Неполнота ранжирования / среза (объединенные SORT + LIMIT): RANKING_SPEC
 CODES_ORDER: list[str] = [
     "UNKNOWN_TABLE",
     "UNKNOWN_COLUMN",
@@ -9,9 +14,7 @@ CODES_ORDER: list[str] = [
     "MISSING_TIME",
     "MISSING_VALUE",
     "MISSING_CRITERION",
-    "MISSING_AGG",
-    "MISSING_SORT",
-    "MISSING_LIMIT",
+    "RANKING_SPEC",
 ]
 
 AMBIGUOUS_CODES: frozenset[str] = frozenset(
@@ -29,24 +32,24 @@ INCOMPLETE_CODES: frozenset[str] = frozenset(
         "MISSING_TIME",
         "MISSING_VALUE",
         "MISSING_CRITERION",
-        "MISSING_AGG",
-        "MISSING_SORT",
-        "MISSING_LIMIT",
+        "RANKING_SPEC",
     }
 )
 
 PENALTIES: dict[str, float] = {
-    "MISSING_TIME": 0.35,
-    "MISSING_CRITERION": 0.25,
-    "MISSING_SORT": 0.20,
-    "MISSING_AGG": 0.25,
-    "MISSING_LIMIT": 0.15,
-    "VAGUE": 0.30,
-    "SCOPE": 0.35,
-    "ATTACH": 0.30,
     "UNKNOWN_TABLE": 0.50,
     "UNKNOWN_COLUMN": 0.40,
+    "SCOPE": 0.35,
+    "VAGUE": 0.30,
+    "ATTACH": 0.30,
+    "MISSING_TIME": 0.35,
     "MISSING_VALUE": 0.40,
+    "MISSING_CRITERION": 0.25,
+    "RANKING_SPEC": 0.25,
+    # Для совместимости со старыми моделями:
+    "MISSING_AGG": 0.25,
+    "MISSING_SORT": 0.20,
+    "MISSING_LIMIT": 0.15,
 }
 
 REASON_TEMPLATES: dict[str, str] = {
@@ -57,10 +60,12 @@ REASON_TEMPLATES: dict[str, str] = {
     "ATTACH": "Неоднозначная синтаксическая привязка: неясно, к какому объекту относится условие.",
     "MISSING_TIME": "Не указан конкретный временной интервал или дата.",
     "MISSING_VALUE": "Отсутствуют обязательные значения для добавления или обновления строки.",
-    "MISSING_CRITERION": "Отсутствует критерий или условие фильтрации (WHERE).",
-    "MISSING_AGG": "Не указана функция агрегации (сумма, среднее, количество или максимум).",
-    "MISSING_SORT": "Не указано поле сортировки для построения рейтинга или топа.",
-    "MISSING_LIMIT": "Не указано предельное количество строк для выборки.",
+    "MISSING_CRITERION": "Отсутствует критерий или условие фильтрации (WHERE) для деструктивной операции.",
+    "RANKING_SPEC": "Не указаны параметры топа/ранжирования (количество записей или поле сортировки).",
+    # Для совместимости со старыми моделями:
+    "MISSING_AGG": "Не указана функция агрегации.",
+    "MISSING_SORT": "Не указано поле сортировки.",
+    "MISSING_LIMIT": "Не указан лимит строк.",
 }
 
 CLARIFICATION_TEMPLATES: dict[str, str] = {
@@ -72,7 +77,9 @@ CLARIFICATION_TEMPLATES: dict[str, str] = {
     "MISSING_TIME": "Укажите точные даты начала и конца периода (например, с 01.01.2024 по 31.01.2024).",
     "MISSING_VALUE": "Перечислите значения всех обязательных полей для записи.",
     "MISSING_CRITERION": "Задайте условие фильтрации строк (например, по ID или статусу).",
-    "MISSING_AGG": "Укажите, какую агрегацию применить: сумму (SUM), среднее (AVG) или количество (COUNT).",
-    "MISSING_SORT": "По какому числовому или строковому полю производить сортировку?",
-    "MISSING_LIMIT": "Сколько именно записей необходимо вернуть (например, топ 5 или топ 10)?",
+    "RANKING_SPEC": "Укажите количество записей для выборки (лимит) и поле/направление сортировки.",
+    # Для совместимости со старыми моделями:
+    "MISSING_AGG": "Укажите функцию агрегации.",
+    "MISSING_SORT": "Укажите поле сортировки.",
+    "MISSING_LIMIT": "Укажите лимит строк.",
 }
